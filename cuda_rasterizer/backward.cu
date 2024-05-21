@@ -15,6 +15,110 @@
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
 
+__device__ void computeCameraPose(int idx, 
+								  const float3* dL_dmean2D, const float3 m, const float m_w,
+								  const glm::mat4 Pproj, const glm::vec4 camera_q,
+								  const glm::vec3* dL_dCqs, const glm::vec3* dL_dCts)
+{
+
+	// loss gradients w.r.t. camera view projection matrix
+	glm::mat4 dL_dMproj = glm::mat4(
+		dL_dmean2D[idx].x * m.x * m_w, dL_dmean2D[idx].y * m.x * m_w, 0, 0,
+		dL_dmean2D[idx].x * m.y * m_w, dL_dmean2D[idx].y * m.y * m_w, 0, 0,
+		dL_dmean2D[idx].x * m.z * m_w, dL_dmean2D[idx].y * m.z * m_w, 0, 0,
+		dL_dmean2D[idx].x * 1.0 * m_w, dL_dmean2D[idx].y * 1.0 * m_w, 0, 0,
+	);
+	//  camera view projection matrix w.r.t. camera quaternion
+	// glm::mat4 Pproj; // pure projection part of "proj", to be passed from render module
+	glm::vec4 q = camera_q; // To be passed from render module
+	float r = q.x;
+	float i = q.y;
+	float j = q.z;
+	float k = q.w;
+	//3x3 transposed
+	glm::mat4 dV_dCqx = glm::mat4(
+		0, 		2*k, 	-2*j, 	0,
+		-2*k,	0, 		2*i, 	0,
+		2*j, 	-2*i, 	0, 		0,
+		0, 		0, 		0, 		0
+	);
+
+	glm::mat4 dV_dCqy = glm::mat4(
+		0,		2*j,	2*k,	0,
+		2*j, 	-4*i,	2*r,	0,
+		2*k,	-2*r,	-4*i,	0,
+		0,		0,		0,		0
+	);
+
+	glm::mat4 dV_dCqz = glm::mat4(
+		-4*j,	2*i,	-2*r,	0,
+		2*i,	0,		2*k,	0,
+		2*r,	2*k,	-4*j,	0,
+		0,		0,		0,		0
+	);
+
+	glm::mat4 dV_dCqw = glm::mat4(
+		-4*k,	2*r,	2*i,	0,
+		-2*r,	-4*k,	2*j,	0,
+		2*i,	2*j,	0,		0,
+		0,		0,		0,		0
+	);
+
+	glm::mat4 dMporj_dCqx = glm::dot(dV_dCqx, Pproj);
+	glm::mat4 dMporj_dCqy = glm::dot(dV_dCqy, Pproj);
+	glm::mat4 dMporj_dCqz = glm::dot(dV_dCqz, Pproj);
+	glm::mat4 dMporj_dCqw = glm::dot(dV_dCqw, Pproj);
+
+	// Gradients of loss w.r.t. camera quaternion
+	glm::vec4 dL_dCq;
+	dL_dCq.x = dL_dMproj[0][0] * dMporj_dCqx[0][0] + dL_dMproj[0][1] * dMporj_dCqx[0][1]
+			 + dL_dMproj[1][0] * dMporj_dCqx[1][0] + dL_dMproj[1][1] * dMporj_dCqx[1][1]
+			 + dL_dMproj[2][0] * dMporj_dCqx[2][0] + dL_dMproj[2][1] * dMporj_dCqx[2][1];
+
+	dL_dCq.y = dL_dMproj[0][0] * dMporj_dCqy[0][0] + dL_dMproj[0][1] * dMporj_dCqy[0][1]
+			 + dL_dMproj[1][0] * dMporj_dCqy[1][0] + dL_dMproj[1][1] * dMporj_dCqy[1][1]
+			 + dL_dMproj[2][0] * dMporj_dCqy[2][0] + dL_dMproj[2][1] * dMporj_dCqy[2][1];
+	
+	dL_dCq.z = dL_dMproj[0][0] * dMporj_dCqz[0][0] + dL_dMproj[0][1] * dMporj_dCqz[0][1]
+			 + dL_dMproj[1][0] * dMporj_dCqz[1][0] + dL_dMproj[1][1] * dMporj_dCqz[1][1]
+			 + dL_dMproj[2][0] * dMporj_dCqz[2][0] + dL_dMproj[2][1] * dMporj_dCqz[2][1];
+
+	dL_dCq.w = dL_dMproj[0][0] * dMporj_dCqw[0][0] + dL_dMproj[0][1] * dMporj_dCqw[0][1]
+			 + dL_dMproj[1][0] * dMporj_dCqw[1][0] + dL_dMproj[1][1] * dMporj_dCqw[1][1]
+			 + dL_dMproj[2][0] * dMporj_dCqw[2][0] + dL_dMproj[2][1] * dMporj_dCqw[2][1];
+
+	//Gradient of view matrix w.r.t. camera translation X
+	glm::mat4 dV_dCtx = glm::mat4(
+		0,	0,	0,	0,
+		0,	0,	0,	0,
+		0,	0,	0,	0,
+		1,	0,	0,	0,
+	);
+	//Gradient of view matrix w.r.t. camera translation Y
+	glm::mat4 dV_dCty = glm::mat4(
+		0,	0,	0,	0,
+		0,	0,	0,	0,
+		0,	0,	0,	0,
+		0,	1,	0,	0,
+	);
+	//Gradient of view matrix w.r.t. camera translation Z
+	glm::mat4 dV_dCtz = glm::mat4(
+		0,	0,	0,	0,
+		0,	0,	0,	0,
+		0,	0,	0,	0,
+		0	0,	1,	0,
+	);
+	glm::mat4 dMporj_dCtx = glm::dot(dV_dCtx, Pproj);
+	glm::mat4 dMporj_dCty = glm::dot(dV_dCty, Pproj);
+	glm::mat4 dMporj_dCtz = glm::dot(dV_dCtz, Pproj);
+	// Gradient of loss w.r.t. camera translation Z
+	dL_dCt.x = dL_dMproj[3][0] * dMporj_dCtx[3][0] + dL_dMproj[3][1] * dMporj_dCtx[3][1];
+	dL_dCt.y = dL_dMproj[3][0] * dMporj_dCty[3][0] + dL_dMproj[3][1] * dMporj_dCty[3][1];
+	dL_dCt.z = dL_dMproj[3][0] * dMporj_dCtz[3][0] + dL_dMproj[3][1] * dMporj_dCtz[3][1];
+		
+}
+
+
 // Backward pass for conversion of spherical harmonics to RGB for
 // each Gaussian.
 __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs)
@@ -385,6 +489,10 @@ __global__ void preprocessCUDA(
 	// That's the second part of the mean gradient. Previous computation
 	// of cov2D and following SH conversion also affects it.
 	dL_dmeans[idx] += dL_dmean;
+
+	// ====== Camera Pose Gradient Computation ======>
+	computeCameraPose(idx, dL_dmean2D, m, m_w);
+// <====== Camera Pose Gradient Computation End ======
 
 	// Compute gradient updates due to computing colors from SHs
 	if (shs)
